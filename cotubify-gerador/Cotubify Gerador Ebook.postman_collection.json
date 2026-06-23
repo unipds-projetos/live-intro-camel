@@ -1,0 +1,40 @@
+{
+  "info": {
+    "_postman_id": "3c778a44-701c-475a-ae15-cb3b7e6fc396",
+    "name": "Cotubify Gerador Ebook",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "2489523",
+    "_collection_link": "https://go.postman.co/collection/2489523-3c778a44-701c-475a-ae15-cb3b7e6fc396?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Gerar Ebook",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pedidoId\": 101,\n  \"nomeCliente\": \"João Silva\",\n  \"cpfCliente\": \"111.222.333-44\",\n  \"ebookId\": 1,\n  \"tituloEbook\": \"Enterprise Integration Patterns\",\n  \"urlRepositorioGit\": \"git@github.com:cotubify-internal/eip-book.git\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8082/api/gerador",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "api",
+            "gerador"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

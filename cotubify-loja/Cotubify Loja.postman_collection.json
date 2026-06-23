@@ -1,0 +1,60 @@
+{
+  "info": {
+    "_postman_id": "ecd1e6d2-decb-46c3-9a5b-c2ce2bc9ddce",
+    "name": "Cotubify Loja",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "2489523",
+    "_collection_link": "https://go.postman.co/collection/2489523-ecd1e6d2-decb-46c3-9a5b-c2ce2bc9ddce?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Listar ebooks",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8080/api/ebooks",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "ebooks"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Novo pedido",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"clientName\": \"Giovana Daiane Simone Ribeiro\",\n    \"cpf\": \"408.339.952-00\",\n    \"email\": \"giovana.daiane.ribeiro@fictor.com.br\",\n    \"address\": \"Avenida Tailândia, 681, Cabralzinho, CEP 68906-126, Macapá / AP\",\n    \"items\": [\n        { \"ebookId\": 1, \"discount\": 50.0 },\n        {  \"ebookId\": 2, \"discount\": 0.0 }\n    ]\n\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/orders",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "orders"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

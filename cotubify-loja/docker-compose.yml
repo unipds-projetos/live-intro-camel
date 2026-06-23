@@ -1,0 +1,23 @@
+services:
+  mysql:
+    image: mysql:9
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: cotubify
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: senha123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+  rabbit:
+    image: rabbitmq:4.2-management
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: senha123
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+volumes:
+  mysql_data:
