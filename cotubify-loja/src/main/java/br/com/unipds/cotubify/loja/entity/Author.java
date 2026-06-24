@@ -1,5 +1,6 @@
 package br.com.unipds.cotubify.loja.entity;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 
 import java.util.HashSet;
@@ -20,6 +21,7 @@ public class Author {
     private String miniBio;
 
     @ManyToMany(mappedBy = "authors")
+    @JsonBackReference
     private Set<Ebook> ebooks = new HashSet<>();
 
     public Author() {
@@ -87,7 +89,6 @@ public class Author {
         return "Author[" +
                 "id=" + id + ", " +
                 "name=" + name + ", " +
-                "miniBio=" + miniBio + ", " +
-                "ebooks=" + ebooks + ']';
+                "miniBio=" + miniBio + ']';
     }
 }

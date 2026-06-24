@@ -1,5 +1,6 @@
 package br.com.unipds.cotubify.loja.entity;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
@@ -15,6 +16,7 @@ public class OrderItem {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "order_id")
+    @JsonBackReference
     private Order order;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -99,7 +101,6 @@ public class OrderItem {
     public String toString() {
         return "OrderItem[" +
                 "id=" + id + ", " +
-                "order=" + order + ", " +
                 "ebook=" + ebook + ", " +
                 "purchasePrice=" + purchasePrice + ", " +
                 "discount=" + discount + ']';

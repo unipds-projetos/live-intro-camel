@@ -1,5 +1,6 @@
 package br.com.unipds.cotubify.loja.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 
 import java.math.BigDecimal;
@@ -29,6 +30,7 @@ public class Ebook {
 
     private String isbn;
 
+    @JsonIgnore
     private LocalDate publicationDate;
 
     private String gitRepoUrl;

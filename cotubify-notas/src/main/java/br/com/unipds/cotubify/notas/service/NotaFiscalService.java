@@ -24,13 +24,14 @@ public class NotaFiscalService {
                   <cliente>
                     <nome>%s</nome>
                     <cpf>%s</cpf>
+                    <endereco>%s</endereco>
                   </cliente>
                   <valorTotal>%s</valorTotal>
                   <descricao>
                     %s
                   </descricao>
                 </notaFiscal>
-                """.formatted(pedido.id(), pedido.nomeCliente(), pedido.cpfCliente(), total, descricaoItens);
+                """.formatted(pedido.id(), pedido.nomeCliente(), pedido.cpfCliente(), pedido.enderecoCliente(), total, descricaoItens);
 
         System.out.println(xml);
 

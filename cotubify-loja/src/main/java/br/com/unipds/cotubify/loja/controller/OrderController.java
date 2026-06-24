@@ -6,6 +6,7 @@ import br.com.unipds.cotubify.loja.entity.Order;
 import br.com.unipds.cotubify.loja.entity.OrderItem;
 import br.com.unipds.cotubify.loja.repository.EbookRepository;
 import br.com.unipds.cotubify.loja.repository.OrderRepository;
+import org.apache.camel.ProducerTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -20,10 +21,12 @@ public class OrderController {
 
     private final OrderRepository orderRepository;
     private final EbookRepository ebookRepository;
+    private final ProducerTemplate camel;
 
-    public OrderController(OrderRepository orderRepository, EbookRepository ebookRepository) {
+    public OrderController(OrderRepository orderRepository, EbookRepository ebookRepository, ProducerTemplate camel) {
         this.orderRepository = orderRepository;
         this.ebookRepository = ebookRepository;
+        this.camel = camel;
     }
 
     @PostMapping
@@ -53,6 +56,8 @@ public class OrderController {
             order.addItem(orderItem);
         });
 
-        orderRepository.save(order);
+        Order savedOrder = orderRepository.save(order);
+        camel.sendBody("direct:new-order", savedOrder);
+
     }
 }
