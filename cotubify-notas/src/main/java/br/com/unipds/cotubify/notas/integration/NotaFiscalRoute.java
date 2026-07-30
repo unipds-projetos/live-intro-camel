@@ -10,6 +10,7 @@ import org.apache.camel.Message;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.jackson.JacksonDataFormat;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,6 +30,17 @@ public class NotaFiscalRoute extends RouteBuilder  {
                     Message exchangeIn = exchange.getIn();
                     JsonNode jsonNode = exchangeIn.getBody(JsonNode.class);
                     List<ItemPedidoDTO> itens = new ArrayList<>();
+
+                    JsonNode itemsNode = jsonNode.get("items");
+                    for (JsonNode itemNode : itemsNode) {
+                        JsonNode ebookNode = itemNode.get("ebook");
+                        itens.add(new ItemPedidoDTO(
+                                ebookNode.get("id").asLong(),
+                                ebookNode.get("title").asText(),
+                                new BigDecimal(itemNode.get("purchasePrice").asText()),
+                                new BigDecimal(itemNode.get("discount").asText())
+                        ));
+                    }
 
                     PedidoDTO pedidoDTO = new PedidoDTO(
                             jsonNode.get("id").asLong(),

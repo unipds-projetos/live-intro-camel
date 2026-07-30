@@ -12,7 +12,7 @@ public class OrderRoute extends RouteBuilder  {
         from("direct:new-order")
                 .log("Camel recebeu um Order de id: ${body.id}")
                 .marshal().json(JsonLibrary.Jackson)
-                .to("spring-rabbitmq:cotubify.orders?routingKey=notas&queues=notas.queue&autoDeclareProducer=true")
+                .to("spring-rabbitmq:cotubify.orders?exchangeType=fanout")
                 .log("Mensagem produzida com sucesso para o RabbitMQ.");
     }
 
