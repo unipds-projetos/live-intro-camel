@@ -1,0 +1,107 @@
+{
+    "permissions": [
+        {
+            "configure": ".*",
+            "read": ".*",
+            "user": "admin",
+            "vhost": "/",
+            "write": ".*"
+        }
+    ],
+    "rabbitmq_version": "4.2.9",
+    "product_name": "RabbitMQ",
+    "product_version": "4.2.9",
+    "rabbit_version": "4.2.9",
+    "exchanges": [
+        {
+            "arguments": {},
+            "auto_delete": false,
+            "durable": true,
+            "name": "amq.rabbitmq.log",
+            "type": "topic",
+            "vhost": "/"
+        },
+        {
+            "arguments": {},
+            "auto_delete": false,
+            "durable": true,
+            "name": "cotubify.orders",
+            "type": "fanout",
+            "vhost": "/"
+        }
+    ],
+    "vhosts": [
+        {
+            "limits": {},
+            "metadata": {
+                "description": "Default virtual host",
+                "tags": [],
+                "default_queue_type": "classic"
+            },
+            "name": "/"
+        }
+    ],
+    "users": [
+        {
+            "hashing_algorithm": "rabbit_password_hashing_sha256",
+            "limits": {},
+            "name": "admin",
+            "password_hash": "pbrtBk69DAiUpYLpw1qZj3I2UnTaROovwvidfn1vyQbGbo+q",
+            "tags": [
+                "administrator"
+            ]
+        }
+    ],
+    "global_parameters": [
+        {
+            "name": "cluster_tags",
+            "value": []
+        }
+    ],
+    "parameters": [],
+    "policies": [],
+    "topic_permissions": [],
+    "explanation": "Definitions of cluster 'rabbit@9ec12a275403'",
+    "rabbitmq_definition_format": "cluster",
+    "original_cluster_name": "rabbit@9ec12a275403",
+    "queues": [
+        {
+            "arguments": {
+                "x-queue-type": "classic"
+            },
+            "auto_delete": false,
+            "durable": true,
+            "name": "gerador.queue",
+            "type": "classic",
+            "vhost": "/"
+        },
+        {
+            "arguments": {
+                "x-queue-type": "classic"
+            },
+            "auto_delete": false,
+            "durable": true,
+            "name": "notas.queue",
+            "type": "classic",
+            "vhost": "/"
+        }
+    ],
+    "bindings": [
+        {
+            "arguments": {},
+            "destination": "gerador.queue",
+            "destination_type": "queue",
+            "routing_key": "",
+            "source": "cotubify.orders",
+            "vhost": "/"
+        },
+        {
+            "arguments": {},
+            "destination": "notas.queue",
+            "destination_type": "queue",
+            "routing_key": "",
+            "source": "cotubify.orders",
+            "vhost": "/"
+        }
+    ]
+}

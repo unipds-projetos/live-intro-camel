@@ -14,6 +14,8 @@ O sistema é composto por 3 aplicações distintas que representam o ecossistema
 2. **`cotubify-notas`** (Porta `8081`): Serviço em Quarkus responsável por receber os dados de um pedido e simular a geração de uma Nota Fiscal eletrônica em formato XML.
 3. **`cotubify-gerador`** (Porta `8082`): API em Spring Boot que simula o pipeline de compilação do Ebook (geração dos arquivos `.pdf` e `.epub` a partir de uma fonte Markdown em repositório Git).
 
+### Ponto de partida (branch `main`)
+
 Os sistemas estão isolados. O pedido é feito na loja e persistido no banco de dados, mas as notas fiscais não são geradas automaticamente e os ebooks não são compilados.
 
 ```mermaid
@@ -37,9 +39,12 @@ graph TD
 | :--- | :--- | :--- | :--- | :--- |
 | **`cotubify-loja`** | Spring Boot | `4.1.0` | `25` | `camel-spring-boot-starter`<br>`camel-spring-rabbitmq-starter`<br>`camel-jackson-starter`<br>`spring-boot-starter-amqp` |
 | **`cotubify-notas`** | Quarkus | `3.36.3` | `25` | `camel-quarkus-amqp`<br>`camel-quarkus-jackson` |
-| **`cotubify-gerador`**| Spring Boot | `4.1.0` | `25` | *(Integrado opcionalmente como desafio)* |
+| **`cotubify-gerador`**| Spring Boot | `4.1.0` | `25` | `camel-spring-boot-starter`<br>`camel-spring-rabbitmq-starter`<br>`camel-jackson-starter`<br>`spring-boot-starter-amqp` |
 | **MySQL (Docker)** | MySQL | `9.0` | N/A | Banco de dados relacional da loja |
 | **RabbitMQ (Docker)**| RabbitMQ | `4.2` | N/A | Broker de mensageria |
+
+> [!NOTE]
+> Os projetos Spring Boot (`cotubify-loja` e `cotubify-gerador`) importam o BOM `camel-spring-boot-bom` na versão `4.21.0`. O `cotubify-notas` usa o `quarkus-camel-bom`, alinhado à versão da plataforma Quarkus.
 
 ---
 
@@ -54,6 +59,8 @@ Gerencia o banco de dados via JPA/Hibernate e inicializa os dados usando Flyway.
   - [OrderItem.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-loja/src/main/java/br/com/unipds/cotubify/loja/entity/OrderItem.java): Itens comprados, preço histórico de venda e desconto aplicado.
 - **DTOs (`br.com.unipds.cotubify.loja.dto`):**
   - `OrderRequestDTO` e `OrderItemRequestDTO`.
+- **Integração (`br.com.unipds.cotubify.loja.integration`):**
+  - [OrderRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-loja/src/main/java/br/com/unipds/cotubify/loja/integration/OrderRoute.java): serializa o pedido em JSON e publica na exchange **fanout** `cotubify.orders`.
 
 ### 🧾 `cotubify-notas` (Quarkus)
 Serviço simples que opera como gerador de Nota Fiscal.
@@ -62,13 +69,17 @@ Serviço simples que opera como gerador de Nota Fiscal.
   - [ItemPedidoDTO.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-notas/src/main/java/br/com/unipds/cotubify/notas/dto/ItemPedidoDTO.java): Itens com o preço de compra e desconto.
 - **Serviço:**
   - [NotaFiscalService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-notas/src/main/java/br/com/unipds/cotubify/notas/service/NotaFiscalService.java): Calcula o valor total líquido (Preço - Desconto), monta um payload XML e faz a saída no console.
+- **Integração (`br.com.unipds.cotubify.notas.integration`):**
+  - [NotaFiscalRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-notas/src/main/java/br/com/unipds/cotubify/notas/integration/NotaFiscalRoute.java): consome a `notas.queue` via AMQP 1.0 e traduz o JSON da loja para o `PedidoDTO` (incluindo a lista de itens).
 
 ### ⚙️ `cotubify-gerador` (Spring Boot)
 API REST que simula a pipeline de criação de arquivos físicos `.pdf` e `.epub`.
 - **DTOs de Entrada (`br.com.unipds.cotubify.gerador.dto`):**
   - [GeracaoEbookRequest.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/dto/GeracaoEbookRequest.java): ID do pedido, cliente, título do ebook e a URL Git a ser clonada.
 - **Serviço:**
-  - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Imprime no console o progresso de geração do ebook.
+  - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Imprime no console o progresso de geração do ebook (com um `Thread.sleep` de 2s simulando a compilação do PDF/EPUB).
+- **Integração (`br.com.unipds.cotubify.gerador.integration`):**
+  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers e faz o **Splitter** dos itens, gerando um ebook por item (em paralelo).
 
 ---
 
@@ -79,9 +90,55 @@ Na pasta raiz e inicie os containers do MySQL e RabbitMQ:
 ```bash
 docker compose up -d
 ```
+O RabbitMQ já sobe com a exchange, as filas e os bindings criados — veja [Topologia do RabbitMQ](#-topologia-do-rabbitmq-importada-automaticamente) logo abaixo.
+
 > [!NOTE]
 > * **RabbitMQ UI:** acesse em `http://localhost:15672` (Usuário: `admin` / Senha: `senha123`).
 > * **MySQL:** exposto na porta `3306` (Usuário: `admin` / Senha: `senha123`, Banco de dados: `cotubify`).
+
+#### 📨 Topologia do RabbitMQ (importada automaticamente)
+
+Nenhuma das rotas declara a topologia (o consumidor do gerador usa `autoDeclare=false`), então a exchange, as filas e os bindings precisam existir **antes** de subir as aplicações. Essa configuração está versionada no [definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/definitions-rabbit.json) e é carregada pelo broker **a cada boot** — não há passo manual:
+
+| Recurso | Nome | Tipo | Observação |
+| :--- | :--- | :--- | :--- |
+| Exchange | `cotubify.orders` | `fanout` | Publish-Subscribe Channel — faz broadcast do pedido |
+| Fila | `notas.queue` | `classic` | Consumida pelo `cotubify-notas` (AMQP 1.0) |
+| Fila | `gerador.queue` | `classic` | Consumida pelo `cotubify-gerador` (spring-rabbitmq) |
+| Binding | `cotubify.orders` → `notas.queue` | — | Sem routing key (fanout ignora) |
+| Binding | `cotubify.orders` → `gerador.queue` | — | Sem routing key (fanout ignora) |
+
+O `docker-compose.yml` monta dois arquivos no container e um volume nomeado para os dados do broker:
+
+```yaml
+volumes:
+  # conf.d preserva o rabbitmq.conf gerado pela imagem a partir das variáveis de ambiente
+  - ./rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
+  - ./definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+  - rabbitmq_data:/var/lib/rabbitmq
+```
+
+O [rabbitmq.conf](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq.conf) tem uma linha só — `load_definitions = /etc/rabbitmq/definitions.json` — e é montado dentro de `conf.d/` justamente para não sobrescrever o `rabbitmq.conf` que a imagem gera a partir do `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`.
+
+Para conferir, acesse a **RabbitMQ UI** em `http://localhost:15672` (`admin` / `senha123`): na aba **Exchanges** a `cotubify.orders` deve aparecer como `fanout` e, ao clicar nela, as duas filas devem estar listadas em *Bindings*. Pela linha de comando:
+
+```bash
+curl -s -u admin:senha123 http://localhost:15672/api/exchanges/%2F/cotubify.orders/bindings/source
+```
+
+Se você **editar** o `definitions-rabbit.json`, basta reiniciar o broker (`docker compose restart rabbit`) para reimportar. Também dá para importar manualmente pela UI em **Overview → Import definitions** ou via API:
+
+```bash
+curl -u admin:senha123 -X POST http://localhost:15672/api/definitions \
+  -H "Content-Type: application/json" \
+  --data-binary @definitions-rabbit.json
+```
+
+> [!IMPORTANT]
+> Quando há definições para carregar, o RabbitMQ **não** cria o usuário padrão (`Will not seed default virtual host and user: have definitions to load...`). O usuário `admin` passa a vir do próprio `definitions-rabbit.json`, que contém o hash da senha `senha123`. Ou seja: alterar `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS` no compose não muda mais as credenciais — é preciso regerar o arquivo de definições.
+
+> [!NOTE]
+> O arquivo foi exportado de um broker de desenvolvimento e inclui o usuário `admin` e suas permissões. Por isso ele só serve para o ambiente local desta live; não reaproveite em outros ambientes.
 
 ### Passo 2: Rodar os Microserviços
 Execute cada um dos projetos em terminais separados usando os comandos de desenvolvimento:
@@ -156,6 +213,9 @@ curl -X POST http://localhost:8080/api/orders \
 }'
 ```
 
+> [!TIP]
+> Este é o **único** endpoint que precisa ser chamado para exercitar toda a integração. Com os três serviços no ar, o pedido é publicado na exchange fanout e você verá, em paralelo: a nota fiscal em XML no console do `cotubify-notas` e **dois** ebooks sendo gerados (um por item) no console do `cotubify-gerador`. Os endpoints abaixo servem para testar cada serviço isoladamente, sem passar pelo broker.
+
 ---
 
 ### 🧾 2. Cotubify Notas (Porta 8081)
@@ -186,6 +246,7 @@ curl -X POST http://localhost:8081/api/notas \
   <cliente>
     <nome>João Silva</nome>
     <cpf>111.222.333-44</cpf>
+    <endereco>Rua das Flores, 123</endereco>
   </cliente>
   <valorTotal>200.00</valorTotal>
   <descricao>
@@ -213,32 +274,39 @@ curl -X POST http://localhost:8082/api/gerador \
 
 ---
 
-## 🎯 Objetivo
+## 🎯 Estado Atual da Integração
 
-A integração assíncrona é estabelecida entre a **Loja** e o gerador de **Notas**. A loja publica o evento de pedido criado no RabbitMQ, e o serviço de notas fiscais consome e processa o XML correspondente.
+Os três microserviços estão integrados de forma assíncrona. A loja publica o pedido criado em uma exchange **fanout** (`cotubify.orders`) do RabbitMQ — um **Publish-Subscribe Channel**. A mesma mensagem é entregue para as duas filas:
+
+* **`notas.queue`** → o `cotubify-notas` traduz o JSON para o seu próprio modelo e imprime a nota fiscal em XML.
+* **`gerador.queue`** → o `cotubify-gerador` faz o **Splitter** dos itens do pedido e dispara a geração de um ebook por item, em paralelo.
+
+O ponto importante é que a loja **não sabe** quem consome o evento: adicionar um novo consumidor é só criar uma nova fila com binding na exchange, sem tocar no código do produtor.
 
 ```mermaid
 graph TD
     Client[Cliente / Postman] -->|POST /api/orders| Loja[cotubify-loja :8080]
     Loja -->|1. Salva pedido| MySQL[(MySQL)]
     Loja -->|2. Envia para direct:new-order| CamelLoja[Camel Context]
-    CamelLoja -->|3. Marshal JSON| RabbitMQ[[RabbitMQ: notas.queue]]
-    
-    Notas[cotubify-notas :8081] --> RabbitMQ
-    Notas -->|4. Consume AMQP| CamelNotas[Camel Context Quarkus]
-    CamelNotas -->|5. Unmarshal & Transform| Process[Custom Processor]
-    Process -->|6. Invoca Bean| Service[NotaFiscalService]
-    Service -->|7. Imprime XML| Console[console stdout]
+    CamelLoja -->|3. Marshal JSON| Exchange[[RabbitMQ: cotubify.orders - fanout]]
+
+    Exchange -->|broadcast| FilaNotas[[notas.queue]]
+    Exchange -->|broadcast| FilaGerador[[gerador.queue]]
+
+    FilaNotas -->|4a. Consume AMQP 1.0| CamelNotas[Camel Context Quarkus]
+    CamelNotas -->|5a. Unmarshal & Translate| Service[NotaFiscalService]
+    Service -->|6a. Imprime XML| ConsoleNotas[console cotubify-notas :8081]
+
+    FilaGerador -->|4b. Consume spring-rabbitmq| CamelGerador[Camel Context Spring Boot]
+    CamelGerador -->|5b. Headers + Splitter dos itens| SplitGerador[1 mensagem por ebook]
+    SplitGerador -->|6b. Translate & Bean| ServiceGerador[GeradorEbookService]
+    ServiceGerador -->|7b. Gera .pdf e .epub| ConsoleGerador[console cotubify-gerador :8082]
 
     classDef integrated fill:#ff9,stroke:#333,stroke-width:2px;
-    class Loja,Notas integrated;
+    class Loja,CamelNotas,CamelGerador integrated;
 
     classDef broker fill:#ff9,stroke:#333,stroke-width:2px;
-    class RabbitMQ broker;
-    
-    Gerador[cotubify-gerador :8082]
-    classDef unintegrated fill:#ff9,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
-    class Gerador unintegrated;
+    class Exchange,FilaNotas,FilaGerador broker;
 ```
 
 ---
@@ -253,31 +321,59 @@ O fluxo integrado funciona da seguinte forma:
   Order savedOrder = orderRepository.save(order);
   camelTemplate.sendBody("direct:new-order", savedOrder);
   ```
-* **Rota Camel:** No [OrderRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-loja/src/main/java/br/com/unipds/cotubify/loja/integration/OrderRoute.java), a rota intercepta o pedido, serializa a entidade JPA em JSON usando **Jackson** e envia para a exchange do RabbitMQ:
+* **Rota Camel:** No [OrderRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-loja/src/main/java/br/com/unipds/cotubify/loja/integration/OrderRoute.java), a rota intercepta o pedido, serializa a entidade JPA em JSON usando **Jackson** e publica na exchange **fanout**. Note que não há `routingKey` nem `queues`: o produtor não conhece os consumidores.
   ```java
   from("direct:new-order")
-      .routeId("rota-loja-para-rabbitmq")
+      .log("Camel recebeu um Order de id: ${body.id}")
       .marshal().json(JsonLibrary.Jackson)
-      .to("spring-rabbitmq:cotubify.exchange?routingKey=notas&queues=notas.queue&autoDeclareProducer=true");
+      .to("spring-rabbitmq:cotubify.orders?exchangeType=fanout")
+      .log("Mensagem produzida com sucesso para o RabbitMQ.");
   ```
 
-### 2. Consumidor: `cotubify-notas`
+### 2. Consumidor: `cotubify-notas` (Message Translator)
 * **Configuração:** O arquivo de propriedades injeta a conexão AMQP no Broker de Mensagens.
-* **Rota Camel:** No [NotaFiscalRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-notas/src/main/java/br/com/unipds/cotubify/notas/integration/NotaFiscalRoute.java), o Camel Quarkus consome as mensagens da fila usando AMQP 1.0, realiza a desserialização do JSON para `JsonNode` e executa uma **tradução estrutural de dados** (Pattern *Message Translator*) antes de repassar os dados limpos ao `NotaFiscalService`:
+* **Rota Camel:** No [NotaFiscalRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-notas/src/main/java/br/com/unipds/cotubify/notas/integration/NotaFiscalRoute.java), o Camel Quarkus consome as mensagens da fila usando AMQP 1.0, realiza a desserialização do JSON para `JsonNode` e executa uma **tradução estrutural de dados** (Pattern *Message Translator*) antes de repassar os dados limpos ao `NotaFiscalService`. A tradução percorre os `items` do pedido, achatando o `ebook` aninhado no `ItemPedidoDTO` do Quarkus:
   ```java
   from("amqp:queue:notas.queue")
+      .log("Nova mensagem de pedido recebido do RabbitMQ")
       .unmarshal(new JacksonDataFormat(JsonNode.class))
       .process(exchange -> {
-          // Extração do JSON recebido da loja e mapeamento para o PedidoDTO do Quarkus...
+          // items[].ebook.{id,title} + items[].{purchasePrice,discount} -> ItemPedidoDTO
+          // e o restante do JSON -> PedidoDTO
       })
       .bean(notaFiscalService, "gerarNotaFiscal");
   ```
+
+### 3. Consumidor: `cotubify-gerador` (Splitter)
+* **Configuração:** As credenciais do broker ficam em `spring.rabbitmq.*` no `application.properties`.
+* **Rota Camel:** No [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java), o gerador consome a `gerador.queue` (com `autoDeclare=false`, já que a topologia é criada fora da aplicação). Como um pedido pode ter vários ebooks e o gerador trabalha **um ebook por vez**, a rota usa o **Splitter** para quebrar a lista de `items` em uma mensagem por item, com `parallelProcessing()`:
+  ```java
+  from("spring-rabbitmq:cotubify.orders?queues=gerador.queue&autoDeclare=false")
+      .unmarshal().json(JsonLibrary.Jackson)
+
+      // dados do pedido viram headers, pois o body será substituído pelo item
+      .setHeader("pedidoId", simple("${body[id]}"))
+      .setHeader("nomeCliente", simple("${body[clientName]}"))
+      .setHeader("cpfCliente", simple("${body[cpf]}"))
+      .setHeader("emailCliente", simple("${body[email]}"))
+
+      .split(simple("${body[items]}")).parallelProcessing()
+          .process(exchange -> {
+              // item + headers do pedido -> GeracaoEbookRequest
+          })
+          .bean(geradorEbookService, "gerarPdfEEpub")
+      .end()
+      .log("Pedido ${header.pedidoId} processado com sucesso. Todos os ebooks gerados.");
+  ```
+* **Por que headers?** O Splitter troca o body pelo item corrente, então os dados do pedido (id, cliente, CPF) são promovidos a headers antes do split para sobreviverem a cada sub-mensagem — servindo como **Correlation Identifier** entre o pedido e os ebooks gerados. Depois do `.end()`, o Camel volta a ter o contexto do pedido inteiro (**Aggregator** implícito do Splitter), permitindo logar a conclusão de todos os itens.
 
 ---
 
 ## 📽️ Conteúdo Abordado
 
-A Live de Introdução ao Apache Camel será estruturada para cobrir desde a fundação conceitual até a aplicação prática em arquitetura de microsserviços.
+### Live 1 — Introdução ao Apache Camel
+
+A primeira live cobriu desde a fundação conceitual até a aplicação prática em arquitetura de microsserviços.
 
 1. **Introdução Teórica aos Padrões de Integração Corporativa (EIPs)**
    * O que é o Apache Camel e por que ele é considerado o "canivete suíço" da integração de sistemas?
@@ -296,7 +392,24 @@ A Live de Introdução ao Apache Camel será estruturada para cobrir desde a fun
 5. **Simulação Completa do Fluxo**
    * Enviar requisição para a loja, verificar o log de publicação, checar o console do RabbitMQ e visualizar a nota fiscal gerada em tempo real no console do Quarkus.
 
+### Live 2 (29/07/2026) — Publish-Subscribe e Splitter
+
+Integração do terceiro microsserviço (**`cotubify-gerador`**), com o cenário: o compilador de Ebooks também precisa receber os dados do pedido assim que uma venda for concluída, para iniciar a compilação do PDF/EPUB.
+
+1. **O problema do ponto-a-ponto**
+   * A rota da Loja apontava direto para a `notas.queue` (`routingKey=notas`). Adicionar um segundo consumidor exigiria mudar o produtor.
+2. **Publish-Subscribe Channel**
+   * Troca da exchange para o tipo **fanout** (`spring-rabbitmq:cotubify.orders?exchangeType=fanout`): a loja publica um evento e o broker faz o broadcast.
+   * Criação da `gerador.queue` com binding na mesma exchange — nenhuma linha alterada no consumidor de notas. A topologia final está exportada em [definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/definitions-rabbit.json).
+3. **Camel no `cotubify-gerador` (Spring Boot)**
+   * Adição do `camel-spring-boot-starter`, `camel-spring-rabbitmq-starter` e `camel-jackson-starter` (BOM `4.21.0`).
+   * Rota consumindo com `autoDeclare=false`, já que a topologia é criada previamente no broker.
+4. **Splitter EIP**
+   * Um pedido tem N ebooks, mas o gerador processa um por vez: `.split(simple("${body[items]}")).parallelProcessing()`.
+   * Uso de **headers** para preservar os dados do pedido (Correlation Identifier) durante o split, e log de conclusão após o `.end()`.
+5. **Fechando o Message Translator do `cotubify-notas`**
+   * Mapeamento da lista de `items` (com o `ebook` aninhado) para os `ItemPedidoDTO`, completando o cálculo do valor total da nota.
+
 ### 🏆 Próximos Passos
-Integrar o terceiro microsserviço (**`cotubify-gerador`**):
-* **Cenário:** O compilador de Ebooks também deve receber os dados do pedido de forma assíncrona assim que uma venda for concluída para iniciar a compilação do PDF/EPUB.
-* **Implementação:** Configurar o Camel no `cotubify-gerador` e alterar a rota da Loja para enviar a mensagem para ambos os destinos (usando padrões como **Publish-Subscribe** no RabbitMQ / Camel). Deve ser feito o Message Splitter e um Message Translator para adequar a estrutura do gerador.
+* **Claim Check:** evitar trafegar o pedido inteiro na mensagem, guardando o payload em um armazenamento externo (ex: S3) e enviando apenas a referência.
+* **Tratamento de erros:** `onException`, `errorHandler`, política de retry e **Dead Letter Channel** para mensagens que falham no processamento.

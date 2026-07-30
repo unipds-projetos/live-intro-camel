@@ -19,5 +19,11 @@ services:
     ports:
       - '5672:5672'
       - '15672:15672'
+    volumes:
+      # conf.d preserva o rabbitmq.conf gerado pela imagem a partir das variáveis de ambiente
+      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
+      - ./definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+      - rabbitmq_data:/var/lib/rabbitmq
 volumes:
   mysql_data:
+  rabbitmq_data:
