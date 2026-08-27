@@ -8,6 +8,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.io.IOException;
+
 @RestController
 @RequestMapping("/api/gerador")
 public class GeradorController {
@@ -19,7 +21,7 @@ public class GeradorController {
     }
 
     @PostMapping
-    public ResponseEntity<Void> acionarGeracaoManualmente(@RequestBody GeracaoEbookRequest request) {
+    public ResponseEntity<Void> acionarGeracaoManualmente(@RequestBody GeracaoEbookRequest request) throws IOException {
         service.gerarPdfEEpub(request);
 
         return ResponseEntity.accepted().build();

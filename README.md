@@ -39,12 +39,17 @@ graph TD
 | :--- | :--- | :--- | :--- | :--- |
 | **`cotubify-loja`** | Spring Boot | `4.1.0` | `25` | `camel-spring-boot-starter`<br>`camel-spring-rabbitmq-starter`<br>`camel-jackson-starter`<br>`spring-boot-starter-amqp` |
 | **`cotubify-notas`** | Quarkus | `3.36.3` | `25` | `camel-quarkus-amqp`<br>`camel-quarkus-jackson` |
-| **`cotubify-gerador`**| Spring Boot | `4.1.0` | `25` | `camel-spring-boot-starter`<br>`camel-spring-rabbitmq-starter`<br>`camel-jackson-starter`<br>`spring-boot-starter-amqp` |
+| **`cotubify-gerador`**| Spring Boot | `4.1.0` | `25` | `camel-spring-boot-starter`<br>`camel-spring-rabbitmq-starter`<br>`camel-jackson-starter`<br>`camel-aws2-s3-starter`<br>`camel-mail-starter`<br>`spring-boot-starter-amqp`<br>`html2pdf` (iText) `6.3.1`<br>`epublib-core` `3.1` |
 | **MySQL (Docker)** | MySQL | `9.0` | N/A | Banco de dados relacional da loja |
 | **RabbitMQ (Docker)**| RabbitMQ | `4.2` | N/A | Broker de mensageria |
+| **LocalStack (Docker)**| LocalStack | `community-archive` | N/A | S3 local para armazenar os ebooks gerados |
+| **Mailpit (Docker)** | Mailpit | `latest` | N/A | Servidor SMTP de teste + UI web para ver os e-mails |
 
 > [!NOTE]
 > Os projetos Spring Boot (`cotubify-loja` e `cotubify-gerador`) importam o BOM `camel-spring-boot-bom` na versão `4.21.0`. O `cotubify-notas` usa o `quarkus-camel-bom`, alinhado à versão da plataforma Quarkus.
+
+> [!NOTE]
+> O `epublib-core` não está no Maven Central. Por isso o `pom.xml` do `cotubify-gerador` declara o repositório `psiegman-repo` (`https://github.com/psiegman/mvn-repo/raw/master/releases`). Ele também exclui o `slf4j-simple` que vem transitivamente, para não conflitar com o Logback do Spring Boot.
 
 ---
 
@@ -77,24 +82,26 @@ API REST que simula a pipeline de criação de arquivos físicos `.pdf` e `.epub
 - **DTOs de Entrada (`br.com.unipds.cotubify.gerador.dto`):**
   - [GeracaoEbookRequest.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/dto/GeracaoEbookRequest.java): ID do pedido, cliente, título do ebook e a URL Git a ser clonada.
 - **Serviço:**
-  - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Imprime no console o progresso de geração do ebook (com um `Thread.sleep` de 2s simulando a compilação do PDF/EPUB).
+  - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Gera **de verdade** os binários do ebook a partir de um HTML montado com os dados do pedido — `gerarPdf` (via iText `HtmlConverter`) e `gerarEpub` (via `epublib`), ambos devolvendo `byte[]`. O método `gerarPdfEEpub` continua existindo para o endpoint REST manual e grava os dois arquivos em `target/ebooks/{pedidoId}/`.
 - **Integração (`br.com.unipds.cotubify.gerador.integration`):**
-  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers e faz o **Splitter** dos itens, gerando um ebook por item (em paralelo).
+  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers, faz o **Splitter** dos itens e, para cada ebook, gera o PDF e o EPUB, envia ambos para o **S3** (LocalStack) usando **Claim Check** e dispara um **e-mail HTML** com os links de download.
 
 ---
 
 ## ⚡ Como Executar o Projeto
 
 ### Passo 1: Subir a Infraestrutura (Docker)
-Na pasta raiz e inicie os containers do MySQL e RabbitMQ:
+Na pasta raiz e inicie os containers do MySQL, RabbitMQ, LocalStack e Mailpit:
 ```bash
 docker compose up -d
 ```
-O RabbitMQ já sobe com a exchange, as filas e os bindings criados — veja [Topologia do RabbitMQ](#-topologia-do-rabbitmq-importada-automaticamente) logo abaixo.
+O RabbitMQ já sobe com a exchange, as filas e os bindings criados — veja [Topologia do RabbitMQ](#-topologia-do-rabbitmq-importada-automaticamente) logo abaixo. O LocalStack já sobe com o bucket S3 criado — veja [S3 local e e-mails](#-s3-local-localstack-e-e-mails-mailpit).
 
 > [!NOTE]
 > * **RabbitMQ UI:** acesse em `http://localhost:15672` (Usuário: `admin` / Senha: `senha123`).
 > * **MySQL:** exposto na porta `3306` (Usuário: `admin` / Senha: `senha123`, Banco de dados: `cotubify`).
+> * **LocalStack (S3):** endpoint em `http://localhost:4566`, bucket `cotubify-ebooks`.
+> * **Mailpit:** SMTP na porta `1025` e **UI web** em `http://localhost:8025`.
 
 #### 📨 Topologia do RabbitMQ (importada automaticamente)
 
@@ -139,6 +146,51 @@ curl -u admin:senha123 -X POST http://localhost:15672/api/definitions \
 
 > [!NOTE]
 > O arquivo foi exportado de um broker de desenvolvimento e inclui o usuário `admin` e suas permissões. Por isso ele só serve para o ambiente local desta live; não reaproveite em outros ambientes.
+
+#### 🪣 S3 local (LocalStack) e e-mails (Mailpit)
+
+O `cotubify-gerador` não guarda mais os ebooks só em disco: ele **sobe os binários para o S3** e envia um e-mail com os links. Para não depender da AWS de verdade, o `docker-compose.yml` traz dois containers:
+
+| Serviço | Imagem | Portas | Para quê |
+| :--- | :--- | :--- | :--- |
+| `localstack` | `localstack/localstack:community-archive` | `4566` | Emula o S3 localmente (`SERVICES: s3`) |
+| `mailpit` | `axllent/mailpit:latest` | `1025` (SMTP) / `8025` (UI) | Captura os e-mails enviados, sem sair da máquina |
+
+O bucket é criado automaticamente no boot pelo script [localstack/init/01-cria-bucket.sh](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/localstack/init/01-cria-bucket.sh), montado em `/etc/localstack/init/ready.d`:
+
+```bash
+awslocal s3 mb s3://cotubify-ebooks
+
+# deixa os objetos legíveis sem assinatura, para o link do e-mail funcionar no navegador
+awslocal s3api put-bucket-policy --bucket cotubify-ebooks --policy '{ ... "Action": "s3:GetObject" ... }'
+```
+
+A `bucket-policy` de leitura pública é o que permite clicar no link do e-mail e baixar o arquivo direto do navegador, sem assinatura AWS.
+
+As coordenadas ficam no `application.properties` do gerador, com credenciais fake (`test`/`test`) e `overrideEndpoint` apontando para o LocalStack:
+
+```properties
+cotubify.s3.bucket=cotubify-ebooks
+cotubify.s3.uri=aws2-s3://cotubify-ebooks?accessKey=test&secretKey=test&region=us-east-1&overrideEndpoint=true&uriEndpointOverride=http://localhost:4566&forcePathStyle=true
+cotubify.s3.url-publica=http://localhost:4566/cotubify-ebooks
+
+cotubify.smtp.uri=smtp://localhost:1025?from=contato@cotubify.com.br&contentType=RAW(text/html;charset=UTF-8)&useHeaderRecipients=true&useHeaderSubject=true
+```
+
+> [!NOTE]
+> O `forcePathStyle=true` é obrigatório com LocalStack: sem ele o SDK monta a URL no estilo *virtual-host* (`cotubify-ebooks.localhost:4566`), que não resolve.
+
+Para conferir os arquivos gerados:
+
+```bash
+# lista tudo que foi para o bucket
+aws --endpoint-url http://localhost:4566 s3 ls s3://cotubify-ebooks/pedidos/ --recursive
+
+# ou simplesmente abra o link no navegador
+open http://localhost:4566/cotubify-ebooks/pedidos/1/1.pdf
+```
+
+E os e-mails aparecem na UI do Mailpit em `http://localhost:8025`.
 
 ### Passo 2: Rodar os Microserviços
 Execute cada um dos projetos em terminais separados usando os comandos de desenvolvimento:
@@ -214,7 +266,7 @@ curl -X POST http://localhost:8080/api/orders \
 ```
 
 > [!TIP]
-> Este é o **único** endpoint que precisa ser chamado para exercitar toda a integração. Com os três serviços no ar, o pedido é publicado na exchange fanout e você verá, em paralelo: a nota fiscal em XML no console do `cotubify-notas` e **dois** ebooks sendo gerados (um por item) no console do `cotubify-gerador`. Os endpoints abaixo servem para testar cada serviço isoladamente, sem passar pelo broker.
+> Este é o **único** endpoint que precisa ser chamado para exercitar toda a integração. Com os três serviços no ar, o pedido é publicado na exchange fanout e você verá, em paralelo: a nota fiscal em XML no console do `cotubify-notas` e **dois** ebooks sendo gerados (um por item) no `cotubify-gerador` — cada um com o PDF e o EPUB no bucket `cotubify-ebooks` do LocalStack e um e-mail com os links aparecendo na UI do Mailpit (`http://localhost:8025`). Os endpoints abaixo servem para testar cada serviço isoladamente, sem passar pelo broker.
 
 ---
 
@@ -272,6 +324,9 @@ curl -X POST http://localhost:8082/api/gerador \
 }'
 ```
 
+> [!NOTE]
+> Esse endpoint chama o `gerarPdfEEpub` diretamente, **sem passar pela rota Camel**: os arquivos são gravados em `cotubify-gerador/target/ebooks/{pedidoId}/{ebookId}.pdf` e `.epub`, e nada vai para o S3 nem para o e-mail. Para exercitar o Claim Check, o upload e o envio de e-mail, use o `POST /api/orders` da loja.
+
 ---
 
 ## 🎯 Estado Atual da Integração
@@ -279,7 +334,7 @@ curl -X POST http://localhost:8082/api/gerador \
 Os três microserviços estão integrados de forma assíncrona. A loja publica o pedido criado em uma exchange **fanout** (`cotubify.orders`) do RabbitMQ — um **Publish-Subscribe Channel**. A mesma mensagem é entregue para as duas filas:
 
 * **`notas.queue`** → o `cotubify-notas` traduz o JSON para o seu próprio modelo e imprime a nota fiscal em XML.
-* **`gerador.queue`** → o `cotubify-gerador` faz o **Splitter** dos itens do pedido e dispara a geração de um ebook por item, em paralelo.
+* **`gerador.queue`** → o `cotubify-gerador` faz o **Splitter** dos itens do pedido e, para cada ebook, gera PDF e EPUB, publica os dois no **S3** usando **Claim Check** e envia um e-mail com os links de download.
 
 O ponto importante é que a loja **não sabe** quem consome o evento: adicionar um novo consumidor é só criar uma nova fila com binding na exchange, sem tocar no código do produtor.
 
@@ -300,13 +355,19 @@ graph TD
     FilaGerador -->|4b. Consume spring-rabbitmq| CamelGerador[Camel Context Spring Boot]
     CamelGerador -->|5b. Headers + Splitter dos itens| SplitGerador[1 mensagem por ebook]
     SplitGerador -->|6b. Translate & Bean| ServiceGerador[GeradorEbookService]
-    ServiceGerador -->|7b. Gera .pdf e .epub| ConsoleGerador[console cotubify-gerador :8082]
+    ServiceGerador -->|7b. Gera .pdf e .epub em memoria| ClaimCheck[Claim Check: Push / Pop]
+    ClaimCheck -->|8b. Upload dos binarios| S3[(S3 - LocalStack :4566)]
+    ClaimCheck -->|9b. E-mail HTML com os links| SMTP[Mailpit :1025]
+    SMTP --> MailUI[UI do Mailpit :8025]
 
     classDef integrated fill:#ff9,stroke:#333,stroke-width:2px;
     class Loja,CamelNotas,CamelGerador integrated;
 
     classDef broker fill:#ff9,stroke:#333,stroke-width:2px;
     class Exchange,FilaNotas,FilaGerador broker;
+
+    classDef infra fill:#ff9,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
+    class S3,SMTP,MailUI infra;
 ```
 
 ---
@@ -367,6 +428,63 @@ O fluxo integrado funciona da seguinte forma:
   ```
 * **Por que headers?** O Splitter troca o body pelo item corrente, então os dados do pedido (id, cliente, CPF) são promovidos a headers antes do split para sobreviverem a cada sub-mensagem — servindo como **Correlation Identifier** entre o pedido e os ebooks gerados. Depois do `.end()`, o Camel volta a ter o contexto do pedido inteiro (**Aggregator** implícito do Splitter), permitindo logar a conclusão de todos os itens.
 
+### 4. `cotubify-gerador`: Claim Check + upload para o S3
+
+Dentro do split, cada ebook precisa virar **dois** arquivos (PDF e EPUB) e ir para o S3. O problema é que o componente `aws2-s3` sobe **o body** como conteúdo do objeto — ou seja, depois de gerar o PDF o body vira `byte[]`, e o `GeracaoEbookRequest` (necessário para gerar o EPUB logo em seguida) seria perdido.
+
+A solução é o **Claim Check EIP**, que guarda o body num repositório interno do Camel e o devolve depois:
+
+```java
+.claimCheck(ClaimCheckOperation.Push)        // guarda o GeracaoEbookRequest
+
+.bean(geradorEbookService, "gerarPdf")       // body vira byte[] do PDF
+.setHeader(AWS2S3Constants.KEY, simple("pedidos/${header.pedidoId}/${header.ebookId}.pdf"))
+.setHeader(AWS2S3Constants.CONTENT_TYPE, constant("application/pdf"))
+.to("{{cotubify.s3.uri}}")
+.log("PDF no S3: ${header.CamelAwsS3Key}")
+
+.claimCheck(ClaimCheckOperation.Pop)         // body volta a ser o GeracaoEbookRequest
+
+.claimCheck(ClaimCheckOperation.Push)
+.bean(geradorEbookService, "gerarEpub")      // mesma dança para o EPUB
+.setHeader(AWS2S3Constants.KEY, simple("pedidos/${header.pedidoId}/${header.ebookId}.epub"))
+.setHeader(AWS2S3Constants.CONTENT_TYPE, constant("application/epub+zip"))
+.to("{{cotubify.s3.uri}}")
+.claimCheck(ClaimCheckOperation.Pop)
+```
+
+* `Push` empilha o body atual; `Pop` restaura o último empilhado. Por isso o par `Push` … `Pop` aparece duas vezes, uma para cada formato.
+* A chave do objeto (`AWS2S3Constants.KEY`) é montada com os headers do pedido: `pedidos/{pedidoId}/{ebookId}.pdf`. É o **Correlation Identifier** valendo também para a organização do bucket.
+* A URI do S3 vem de *property placeholder* (`{{cotubify.s3.uri}}`), então trocar o LocalStack pela AWS de verdade é mudar uma linha do `application.properties`. O mesmo vale para o SMTP (`{{cotubify.smtp.uri}}`), na seção seguinte.
+
+### 5. `cotubify-gerador`: notificação por e-mail (`camel-mail`)
+
+Com os arquivos no S3, o último passo do split monta um e-mail HTML e envia via SMTP:
+
+```java
+.setHeader("To",      simple("${header.emailCliente}"))
+.setHeader("Subject", simple("Seu ebook \"${header.tituloEbook}\" está pronto!"))
+.setBody(simple("""
+   <h2>Olá, ${header.nomeCliente}!</h2>
+   ...
+   <li><a href="{{cotubify.s3.url-publica}}/pedidos/${header.pedidoId}/${header.ebookId}.pdf">Baixar PDF</a></li>
+   <li><a href="{{cotubify.s3.url-publica}}/pedidos/${header.pedidoId}/${header.ebookId}.epub">Baixar EPUB</a></li>
+   ...
+"""))
+.to("{{cotubify.smtp.uri}}")
+```
+
+Assim como a do S3, a URI do SMTP fica fora do código, no `application.properties`:
+
+```properties
+cotubify.smtp.uri=smtp://localhost:1025?from=contato@cotubify.com.br&contentType=RAW(text/html;charset=UTF-8)&useHeaderRecipients=true&useHeaderSubject=true
+```
+
+* `useHeaderRecipients=true` e `useHeaderSubject=true` fazem o componente usar os headers `To` e `Subject` da mensagem em vez de valores fixos na URI — é o que permite mandar para o e-mail de cada cliente.
+* `contentType=RAW(text/html;charset=UTF-8)` precisa do `RAW(...)` porque o valor contém `;` e `=`, que a URI do Camel interpretaria como separadores de opção.
+* Com o placeholder, trocar o Mailpit por um SMTP real (ou mudar o remetente) não exige recompilar a rota.
+* Os links apontam para a `cotubify.s3.url-publica`, que só funciona porque o bucket recebeu a política de leitura pública no script de init do LocalStack.
+
 ---
 
 ## 📽️ Conteúdo Abordado
@@ -410,6 +528,28 @@ Integração do terceiro microsserviço (**`cotubify-gerador`**), com o cenário
 5. **Fechando o Message Translator do `cotubify-notas`**
    * Mapeamento da lista de `items` (com o `ebook` aninhado) para os `ItemPedidoDTO`, completando o cálculo do valor total da nota.
 
+### Live 3 (26/08/2026) — Claim Check, S3 e notificação por e-mail
+
+O `cotubify-gerador` deixou de ser uma simulação: agora ele **gera os binários de verdade**, guarda os arquivos num S3 e avisa o cliente por e-mail. O cenário: terminada a compilação, o ebook precisa ficar disponível para download e o comprador precisa receber o link.
+
+1. **Gerando os arquivos de verdade**
+   * Fim do `Thread.sleep(2000)`. O `GeradorEbookService` monta um HTML com os dados do pedido e o converte para **PDF** (iText `html2pdf`) e **EPUB** (`epublib`), devolvendo `byte[]` em `gerarPdf` e `gerarEpub`.
+   * Detalhes de dependência: o `epublib-core` vem de um repositório fora do Maven Central (`psiegman-repo`) e precisa da exclusão do `slf4j-simple`.
+2. **Infra local: LocalStack e Mailpit**
+   * `localstack` (`SERVICES: s3`) na porta `4566`, com o bucket `cotubify-ebooks` criado no boot pelo script em `localstack/init/ready.d` — inclusive com `bucket-policy` de leitura pública, para o link do e-mail abrir no navegador.
+   * `mailpit` como SMTP de teste (`1025`) com UI web (`8025`), para ver os e-mails sem mandar nada para fora.
+3. **Claim Check EIP**
+   * O problema: o componente `aws2-s3` sobe **o body**, então gerar o PDF destrói o `GeracaoEbookRequest` que ainda seria necessário para o EPUB.
+   * A solução: `.claimCheck(ClaimCheckOperation.Push)` antes de transformar o body e `.claimCheck(ClaimCheckOperation.Pop)` depois do upload — duas vezes, uma por formato.
+4. **Componente `aws2-s3`**
+   * `camel-aws2-s3-starter`, URI vinda de *property placeholder* (`{{cotubify.s3.uri}}`) com credenciais fake, `overrideEndpoint`/`uriEndpointOverride` para o LocalStack e `forcePathStyle=true`.
+   * Chave do objeto montada com os headers do pedido: `pedidos/{pedidoId}/{ebookId}.pdf`.
+5. **Componente `camel-mail`**
+   * `camel-mail-starter`, corpo HTML montado com `simple()` e envio via `{{cotubify.smtp.uri}}` (Mailpit em `smtp://localhost:1025`).
+   * `useHeaderRecipients` / `useHeaderSubject` para usar os headers `To` e `Subject`, e `RAW(...)` no `contentType` por causa dos caracteres especiais na URI.
+6. **Simulação completa**
+   * Um `POST /api/orders` com dois itens → nota fiscal em XML no `cotubify-notas`, dois PDFs e dois EPUBs no bucket do LocalStack e dois e-mails na UI do Mailpit.
+
 ### 🏆 Próximos Passos
-* **Claim Check:** evitar trafegar o pedido inteiro na mensagem, guardando o payload em um armazenamento externo (ex: S3) e enviando apenas a referência.
 * **Tratamento de erros:** `onException`, `errorHandler`, política de retry e **Dead Letter Channel** para mensagens que falham no processamento.
+* **Idempotência:** `idempotentConsumer` para não regerar (nem reenviar por e-mail) o mesmo ebook em caso de redelivery do RabbitMQ.

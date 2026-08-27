@@ -24,6 +24,22 @@ services:
       - ./rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
       - ./definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
       - rabbitmq_data:/var/lib/rabbitmq
+  localstack:
+    image: localstack/localstack:community-archive
+    environment:
+      SERVICES: s3
+      DEBUG: 1
+    ports:
+      - '4566:4566'
+    volumes:
+      - ./localstack/init:/etc/localstack/init/ready.d:ro
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: always
+    ports:
+      - '1025:1025'   # SMTP
+      - '8025:8025'   # UI web
+
 volumes:
   mysql_data:
   rabbitmq_data:
