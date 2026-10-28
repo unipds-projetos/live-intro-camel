@@ -84,7 +84,8 @@ API REST que simula a pipeline de criação de arquivos físicos `.pdf` e `.epub
 - **Serviço:**
   - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Gera **de verdade** os binários do ebook a partir de um HTML montado com os dados do pedido — `gerarPdf` (via iText `HtmlConverter`) e `gerarEpub` (via `epublib`), ambos devolvendo `byte[]`. O método `gerarPdfEEpub` continua existindo para o endpoint REST manual e grava os dois arquivos em `target/ebooks/{pedidoId}/`.
 - **Integração (`br.com.unipds.cotubify.gerador.integration`):**
-  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers, faz o **Splitter** dos itens e, para cada ebook, gera o PDF e o EPUB, envia ambos para o **S3** (LocalStack) usando **Claim Check** e dispara um **e-mail HTML** com os links de download.
+  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers, faz o **Splitter** dos itens e, para cada ebook, gera o PDF e o EPUB e envia ambos para o **S3** (LocalStack) usando **Claim Check**. No fim do split, um **Aggregator** junta os ebooks gerados e dispara **um único e-mail HTML** por pedido com todos os links de download. Falhas são retentadas com backoff exponencial e, se persistirem, o pedido original vai para um **Dead Letter Channel** (`cotubify.dlq`).
+  - [EmailService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/EmailService.java): recebe a `List<GeracaoEbookRequest>` agregada e monta o corpo HTML do e-mail, com uma linha (PDF | EPUB) por ebook.
 
 ---
 
@@ -105,7 +106,7 @@ O RabbitMQ já sobe com a exchange, as filas e os bindings criados — veja [Top
 
 #### 📨 Topologia do RabbitMQ (importada automaticamente)
 
-Nenhuma das rotas declara a topologia (o consumidor do gerador usa `autoDeclare=false`), então a exchange, as filas e os bindings precisam existir **antes** de subir as aplicações. Essa configuração está versionada no [definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/definitions-rabbit.json) e é carregada pelo broker **a cada boot** — não há passo manual:
+Nenhuma das rotas declara a topologia (o consumidor do gerador usa `autoDeclare=false`), então a exchange, as filas e os bindings precisam existir **antes** de subir as aplicações. Essa configuração está versionada no [rabbitmq/definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq/definitions-rabbit.json) e é carregada pelo broker **a cada boot** — não há passo manual:
 
 | Recurso | Nome | Tipo | Observação |
 | :--- | :--- | :--- | :--- |
@@ -114,18 +115,24 @@ Nenhuma das rotas declara a topologia (o consumidor do gerador usa `autoDeclare=
 | Fila | `gerador.queue` | `classic` | Consumida pelo `cotubify-gerador` (spring-rabbitmq) |
 | Binding | `cotubify.orders` → `notas.queue` | — | Sem routing key (fanout ignora) |
 | Binding | `cotubify.orders` → `gerador.queue` | — | Sem routing key (fanout ignora) |
+| Exchange | `cotubify.dlq` | `fanout` | **Dead Letter Channel** do gerador — recebe os pedidos que falharam mesmo depois dos retries |
+| Fila | `gerador.dlq` | `classic` | Onde os pedidos com falha ficam parados, esperando análise ou reprocessamento |
+| Binding | `cotubify.dlq` → `gerador.dlq` | — | Sem routing key (fanout ignora) |
 
-O `docker-compose.yml` monta dois arquivos no container e um volume nomeado para os dados do broker:
+Os arquivos de configuração do broker ficam na pasta [rabbitmq/](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq). O `docker-compose.yml` monta três arquivos no container e um volume nomeado para os dados do broker:
 
 ```yaml
 volumes:
   # conf.d preserva o rabbitmq.conf gerado pela imagem a partir das variáveis de ambiente
-  - ./rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
-  - ./definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+  - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
+  - ./rabbitmq/definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+  - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
   - rabbitmq_data:/var/lib/rabbitmq
 ```
 
-O [rabbitmq.conf](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq.conf) tem uma linha só — `load_definitions = /etc/rabbitmq/definitions.json` — e é montado dentro de `conf.d/` justamente para não sobrescrever o `rabbitmq.conf` que a imagem gera a partir do `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`.
+O [rabbitmq/enabled_plugins](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq/enabled_plugins) liga, além dos plugins que a imagem `-management` já traz (`rabbitmq_management` e `rabbitmq_prometheus`), o **Shovel** (`rabbitmq_shovel` e `rabbitmq_shovel_management`). É ele que habilita a seção **Move messages** na página de uma fila na UI — usada para devolver as mensagens da `gerador.dlq` para a `gerador.queue` depois de corrigir o problema (veja [Dead Letter Channel](#6-cotubify-gerador-dead-letter-channel-e-retries)).
+
+O [rabbitmq/rabbitmq.conf](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq/rabbitmq.conf) tem uma linha só — `load_definitions = /etc/rabbitmq/definitions.json` — e é montado dentro de `conf.d/` justamente para não sobrescrever o `rabbitmq.conf` que a imagem gera a partir do `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS`.
 
 Para conferir, acesse a **RabbitMQ UI** em `http://localhost:15672` (`admin` / `senha123`): na aba **Exchanges** a `cotubify.orders` deve aparecer como `fanout` e, ao clicar nela, as duas filas devem estar listadas em *Bindings*. Pela linha de comando:
 
@@ -138,7 +145,7 @@ Se você **editar** o `definitions-rabbit.json`, basta reiniciar o broker (`dock
 ```bash
 curl -u admin:senha123 -X POST http://localhost:15672/api/definitions \
   -H "Content-Type: application/json" \
-  --data-binary @definitions-rabbit.json
+  --data-binary @rabbitmq/definitions-rabbit.json
 ```
 
 > [!IMPORTANT]
@@ -266,7 +273,7 @@ curl -X POST http://localhost:8080/api/orders \
 ```
 
 > [!TIP]
-> Este é o **único** endpoint que precisa ser chamado para exercitar toda a integração. Com os três serviços no ar, o pedido é publicado na exchange fanout e você verá, em paralelo: a nota fiscal em XML no console do `cotubify-notas` e **dois** ebooks sendo gerados (um por item) no `cotubify-gerador` — cada um com o PDF e o EPUB no bucket `cotubify-ebooks` do LocalStack e um e-mail com os links aparecendo na UI do Mailpit (`http://localhost:8025`). Os endpoints abaixo servem para testar cada serviço isoladamente, sem passar pelo broker.
+> Este é o **único** endpoint que precisa ser chamado para exercitar toda a integração. Com os três serviços no ar, o pedido é publicado na exchange fanout e você verá, em paralelo: a nota fiscal em XML no console do `cotubify-notas` e **dois** ebooks sendo gerados (um por item) no `cotubify-gerador` — cada um com o PDF e o EPUB no bucket `cotubify-ebooks` do LocalStack — e **um** e-mail com os links dos dois ebooks aparecendo na UI do Mailpit (`http://localhost:8025`). Os endpoints abaixo servem para testar cada serviço isoladamente, sem passar pelo broker.
 
 ---
 
@@ -334,7 +341,7 @@ curl -X POST http://localhost:8082/api/gerador \
 Os três microserviços estão integrados de forma assíncrona. A loja publica o pedido criado em uma exchange **fanout** (`cotubify.orders`) do RabbitMQ — um **Publish-Subscribe Channel**. A mesma mensagem é entregue para as duas filas:
 
 * **`notas.queue`** → o `cotubify-notas` traduz o JSON para o seu próprio modelo e imprime a nota fiscal em XML.
-* **`gerador.queue`** → o `cotubify-gerador` faz o **Splitter** dos itens do pedido e, para cada ebook, gera PDF e EPUB, publica os dois no **S3** usando **Claim Check** e envia um e-mail com os links de download.
+* **`gerador.queue`** → o `cotubify-gerador` faz o **Splitter** dos itens do pedido e, para cada ebook, gera PDF e EPUB e publica os dois no **S3** usando **Claim Check**. Um **Aggregator** junta os ebooks gerados e envia **um** e-mail por pedido com todos os links de download. Se algo falhar, o Camel tenta de novo 3 vezes e, persistindo o erro, publica o pedido original no **Dead Letter Channel** (`cotubify.dlq` → `gerador.dlq`).
 
 O ponto importante é que a loja **não sabe** quem consome o evento: adicionar um novo consumidor é só criar uma nova fila com binding na exchange, sem tocar no código do produtor.
 
@@ -357,14 +364,18 @@ graph TD
     SplitGerador -->|6b. Translate & Bean| ServiceGerador[GeradorEbookService]
     ServiceGerador -->|7b. Gera .pdf e .epub em memoria| ClaimCheck[Claim Check: Push / Pop]
     ClaimCheck -->|8b. Upload dos binarios| S3[(S3 - LocalStack :4566)]
-    ClaimCheck -->|9b. E-mail HTML com os links| SMTP[Mailpit :1025]
+    ClaimCheck -->|9b. Fim do split| Aggregator[Aggregator: List de ebooks do pedido]
+    Aggregator -->|10b. 1 e-mail HTML com todos os links| SMTP[Mailpit :1025]
     SMTP --> MailUI[UI do Mailpit :8025]
+
+    CamelGerador -.->|falhou apos 3 retries: mensagem original| DLX[[RabbitMQ: cotubify.dlq - fanout]]
+    DLX -.-> FilaDLQ[[gerador.dlq]]
 
     classDef integrated fill:#ff9,stroke:#333,stroke-width:2px;
     class Loja,CamelNotas,CamelGerador integrated;
 
     classDef broker fill:#ff9,stroke:#333,stroke-width:2px;
-    class Exchange,FilaNotas,FilaGerador broker;
+    class Exchange,FilaNotas,FilaGerador,DLX,FilaDLQ broker;
 
     classDef infra fill:#ff9,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
     class S3,SMTP,MailUI infra;
@@ -426,7 +437,7 @@ O fluxo integrado funciona da seguinte forma:
       .end()
       .log("Pedido ${header.pedidoId} processado com sucesso. Todos os ebooks gerados.");
   ```
-* **Por que headers?** O Splitter troca o body pelo item corrente, então os dados do pedido (id, cliente, CPF) são promovidos a headers antes do split para sobreviverem a cada sub-mensagem — servindo como **Correlation Identifier** entre o pedido e os ebooks gerados. Depois do `.end()`, o Camel volta a ter o contexto do pedido inteiro (**Aggregator** implícito do Splitter), permitindo logar a conclusão de todos os itens.
+* **Por que headers?** O Splitter troca o body pelo item corrente, então os dados do pedido (id, cliente, CPF) são promovidos a headers antes do split para sobreviverem a cada sub-mensagem — servindo como **Correlation Identifier** entre o pedido e os ebooks gerados. Depois do `.end()`, o Camel volta a ter o contexto do pedido inteiro. O que vira o body nesse ponto é decidido pela `AggregationStrategy` passada ao `split` — veja a [seção 5](#5-cotubify-gerador-aggregator--um-e-mail-por-pedido-camel-mail).
 
 ### 4. `cotubify-gerador`: Claim Check + upload para o S3
 
@@ -457,22 +468,38 @@ A solução é o **Claim Check EIP**, que guarda o body num repositório interno
 * A chave do objeto (`AWS2S3Constants.KEY`) é montada com os headers do pedido: `pedidos/{pedidoId}/{ebookId}.pdf`. É o **Correlation Identifier** valendo também para a organização do bucket.
 * A URI do S3 vem de *property placeholder* (`{{cotubify.s3.uri}}`), então trocar o LocalStack pela AWS de verdade é mudar uma linha do `application.properties`. O mesmo vale para o SMTP (`{{cotubify.smtp.uri}}`), na seção seguinte.
 
-### 5. `cotubify-gerador`: notificação por e-mail (`camel-mail`)
+### 5. `cotubify-gerador`: Aggregator + um e-mail por pedido (`camel-mail`)
 
-Com os arquivos no S3, o último passo do split monta um e-mail HTML e envia via SMTP:
+Na Live 3 o e-mail era enviado **dentro** do split: um pedido com dois ebooks gerava **dois** e-mails para o mesmo cliente. O ideal é mandar **um** e-mail por pedido, com os links de todos os ebooks — ou seja, juntar de novo as sub-mensagens que o Splitter separou. Esse é o **Aggregator EIP**.
+
+O Splitter do Camel já tem um Aggregator embutido: basta passar uma `AggregationStrategy` como segundo argumento do `split`. Com `AggregationStrategies.flexible().accumulateInCollection(ArrayList.class)`, o body de cada sub-mensagem ao final do split (o `GeracaoEbookRequest`, restaurado pelo último `Pop` do Claim Check) é acumulado numa lista, que vira o body depois do `.end()`:
 
 ```java
+.split(simple("${body[items]}"),
+        AggregationStrategies.flexible()
+                .accumulateInCollection(ArrayList.class)
+)
+.parallelProcessing()
+.shareUnitOfWork().stopOnException()
+
+    // ... gera PDF/EPUB e sobe pro S3 com Claim Check (seção 4) ...
+
+.end()   // aqui o body é uma List<GeracaoEbookRequest> com todos os ebooks do pedido
+
 .setHeader("To",      simple("${header.emailCliente}"))
-.setHeader("Subject", simple("Seu ebook \"${header.tituloEbook}\" está pronto!"))
-.setBody(simple("""
-   <h2>Olá, ${header.nomeCliente}!</h2>
-   ...
-   <li><a href="{{cotubify.s3.url-publica}}/pedidos/${header.pedidoId}/${header.ebookId}.pdf">Baixar PDF</a></li>
-   <li><a href="{{cotubify.s3.url-publica}}/pedidos/${header.pedidoId}/${header.ebookId}.epub">Baixar EPUB</a></li>
-   ...
-"""))
+.setHeader("Subject", simple("Seus ebooks do pedido #${header.pedidoId} estão prontos!"))
+
+.bean(emailService, "montarCorpoDoEmail")
+
+.removeHeaders("*", "To", "Subject", "From", "pedidoId")
+
 .to("{{cotubify.smtp.uri}}")
+.log("E-mail enviado para ${header.To}")
 ```
+
+* O corpo do e-mail saiu da rota e foi para o [EmailService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/EmailService.java): montar uma lista HTML percorrendo uma `List` com `simple()` ficaria ilegível, enquanto em Java é um `stream().map(...)` com *text block*. O Camel faz o binding do body (`List<GeracaoEbookRequest>`) para o parâmetro do método `montarCorpoDoEmail` e usa o retorno (`String`) como novo body.
+* O `.removeHeaders("*", "To", "Subject", "From", "pedidoId")` remove todos os headers, exceto os listados. O `camel-mail` copia os headers da mensagem Camel para os headers do e-mail, então sem essa limpeza dados como `cpfCliente` e `nomeCliente` iriam parar no cabeçalho do e-mail enviado. O `pedidoId` fica porque é usado no log final.
+* `shareUnitOfWork()` e `stopOnException()` são assunto do tratamento de erros — veja a [seção 6](#6-cotubify-gerador-dead-letter-channel-e-retries).
 
 Assim como a do S3, a URI do SMTP fica fora do código, no `application.properties`:
 
@@ -483,7 +510,40 @@ cotubify.smtp.uri=smtp://localhost:1025?from=contato@cotubify.com.br&contentType
 * `useHeaderRecipients=true` e `useHeaderSubject=true` fazem o componente usar os headers `To` e `Subject` da mensagem em vez de valores fixos na URI — é o que permite mandar para o e-mail de cada cliente.
 * `contentType=RAW(text/html;charset=UTF-8)` precisa do `RAW(...)` porque o valor contém `;` e `=`, que a URI do Camel interpretaria como separadores de opção.
 * Com o placeholder, trocar o Mailpit por um SMTP real (ou mudar o remetente) não exige recompilar a rota.
-* Os links apontam para a `cotubify.s3.url-publica`, que só funciona porque o bucket recebeu a política de leitura pública no script de init do LocalStack.
+* Os links apontam para a `cotubify.s3.url-publica` (injetada no `EmailService` via `@Value`), que só funciona porque o bucket recebeu a política de leitura pública no script de init do LocalStack.
+
+### 6. `cotubify-gerador`: Dead Letter Channel e retries
+
+O que acontece se o S3 ou o SMTP estiverem fora do ar? Sem tratamento, a exception sobe, o Camel loga o erro e o pedido se perde — o cliente pagou e nunca recebe o ebook. A solução é o **Dead Letter Channel EIP**: tentar de novo algumas vezes e, se não der, mandar a mensagem para um canal separado em vez de descartá-la.
+
+No Camel isso é um `errorHandler`, declarado no início do `configure()` e válido para todas as rotas do `RouteBuilder`:
+
+```java
+errorHandler(deadLetterChannel("spring-rabbitmq:cotubify.dlq?exchangeType=fanout")
+                .maximumRedeliveries(3)
+                .redeliveryDelay(2000)
+                .useExponentialBackOff()
+                .backOffMultiplier(2)
+                .retryAttemptedLogLevel(LoggingLevel.WARN)
+                .useOriginalMessage());
+```
+
+* **Redelivery:** até 3 novas tentativas, com backoff exponencial — esperas de 2s, 4s e 8s. Cada tentativa é logada em `WARN`. O redelivery é feito pelo próprio Camel, **no ponto em que falhou** (não reprocessa a rota desde o início nem devolve a mensagem para o RabbitMQ).
+* **Dead Letter Channel:** esgotadas as tentativas, a mensagem é publicada na exchange `cotubify.dlq`, que faz o fanout para a fila `gerador.dlq` (ambas criadas pelo [rabbitmq/definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq/definitions-rabbit.json)). Como o erro foi tratado, a mensagem é confirmada (*ack*) na `gerador.queue` — ela não fica em loop.
+* **`useOriginalMessage()`:** no momento da falha o body já foi transformado (um `Map`, um `GeracaoEbookRequest`, um `byte[]` de PDF...). Com essa opção, o que vai para a DLQ é a **mensagem como chegou** do RabbitMQ — o JSON do pedido. Assim ela pode ser reprocessada sem nenhuma conversão.
+
+E o Splitter? Cada item do split é uma sub-mensagem com sua própria *unit of work*. Por isso a rota usa:
+
+* **`shareUnitOfWork()`**: a sub-mensagem compartilha a unit of work do pedido. É o que faz o `useOriginalMessage()` devolver o **pedido inteiro** (e não só o item que falhou) e faz a falha de um item ser tratada como falha do pedido.
+* **`stopOnException()`**: se um item falhar, o split para e a exception é propagada, em vez de seguir com os demais e mandar um e-mail incompleto.
+
+Para ver funcionando, derrube o LocalStack e faça um pedido:
+
+```bash
+docker compose stop localstack
+```
+
+O log do `cotubify-gerador` mostra as tentativas em `WARN` e, depois de ~14s, a mensagem aparece na `gerador.dlq` (aba **Queues** da RabbitMQ UI). Para reprocessar, suba o LocalStack de novo (`docker compose start localstack`), abra a `gerador.dlq` na UI e use **Move messages** (do plugin Shovel) com destino `gerador.queue`: o gerador consome o pedido original e segue o fluxo normalmente.
 
 ---
 
@@ -518,7 +578,7 @@ Integração do terceiro microsserviço (**`cotubify-gerador`**), com o cenário
    * A rota da Loja apontava direto para a `notas.queue` (`routingKey=notas`). Adicionar um segundo consumidor exigiria mudar o produtor.
 2. **Publish-Subscribe Channel**
    * Troca da exchange para o tipo **fanout** (`spring-rabbitmq:cotubify.orders?exchangeType=fanout`): a loja publica um evento e o broker faz o broadcast.
-   * Criação da `gerador.queue` com binding na mesma exchange — nenhuma linha alterada no consumidor de notas. A topologia final está exportada em [definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/definitions-rabbit.json).
+   * Criação da `gerador.queue` com binding na mesma exchange — nenhuma linha alterada no consumidor de notas. A topologia final está exportada em [definitions-rabbit.json](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/rabbitmq/definitions-rabbit.json).
 3. **Camel no `cotubify-gerador` (Spring Boot)**
    * Adição do `camel-spring-boot-starter`, `camel-spring-rabbitmq-starter` e `camel-jackson-starter` (BOM `4.21.0`).
    * Rota consumindo com `autoDeclare=false`, já que a topologia é criada previamente no broker.
@@ -550,6 +610,53 @@ O `cotubify-gerador` deixou de ser uma simulação: agora ele **gera os binário
 6. **Simulação completa**
    * Um `POST /api/orders` com dois itens → nota fiscal em XML no `cotubify-notas`, dois PDFs e dois EPUBs no bucket do LocalStack e dois e-mails na UI do Mailpit.
 
-### 🏆 Próximos Passos
-* **Tratamento de erros:** `onException`, `errorHandler`, política de retry e **Dead Letter Channel** para mensagens que falham no processamento.
-* **Idempotência:** `idempotentConsumer` para não regerar (nem reenviar por e-mail) o mesmo ebook em caso de redelivery do RabbitMQ.
+### Live 4 (28/10/2026) — Aggregator e Dead Letter Channel
+
+Dois problemas do `cotubify-gerador` que ficaram da Live 3: o cliente recebia **um e-mail por ebook** e, se o S3 ou o SMTP falhassem, o pedido **se perdia**.
+
+1. **Aggregator EIP**
+   * O problema: o e-mail era enviado dentro do split, então um pedido com dois ebooks gerava dois e-mails.
+   * O Aggregator embutido no Splitter: `.split(expressão, AggregationStrategies.flexible().accumulateInCollection(ArrayList.class))` junta os `GeracaoEbookRequest` numa `List`, que vira o body depois do `.end()`.
+   * O envio do e-mail saiu de dentro do split: agora é **um e-mail por pedido**, com um link de PDF e EPUB por ebook.
+2. **`EmailService` e bean binding**
+   * O HTML do e-mail saiu do `simple()` e foi para um `@Service` que recebe a `List<GeracaoEbookRequest>` e devolve a `String` do corpo, chamado com `.bean(emailService, "montarCorpoDoEmail")`.
+   * `.removeHeaders("*", "To", "Subject", "From", "pedidoId")` para não vazar os headers internos da rota (como o CPF) no cabeçalho do e-mail.
+3. **Dead Letter Channel EIP**
+   * `errorHandler(deadLetterChannel("spring-rabbitmq:cotubify.dlq?exchangeType=fanout"))` com 3 redeliveries, backoff exponencial (2s, 4s, 8s) e log em `WARN`.
+   * `useOriginalMessage()` para a DLQ receber o JSON do pedido como chegou, pronto para ser reprocessado.
+   * `shareUnitOfWork()` e `stopOnException()` no split, para a falha de um item virar falha do pedido inteiro.
+4. **Topologia e plugins do RabbitMQ**
+   * Arquivos do broker movidos para a pasta `rabbitmq/`.
+   * Exchange `cotubify.dlq` (fanout) e fila `gerador.dlq` no `definitions-rabbit.json`.
+   * `enabled_plugins` com o **Shovel**, para mover as mensagens da `gerador.dlq` de volta para a `gerador.queue` pela UI.
+5. **Simulação completa**
+   * Um `POST /api/orders` com dois itens → dois PDFs e dois EPUBs no bucket e **um** e-mail no Mailpit.
+   * Com o LocalStack parado → retries no log, pedido na `gerador.dlq`; LocalStack de volta + **Move messages** → pedido reprocessado e e-mail enviado.
+
+---
+
+## 🏆 Desafio: Idempotent Consumer
+
+A Live 4 criou um jeito fácil de **reprocessar** mensagens: mover da `gerador.dlq` para a `gerador.queue`. Mas reprocessar abre uma porta perigosa: e se a mesma mensagem chegar duas vezes?
+
+Isso acontece mais do que parece:
+
+* O RabbitMQ garante entrega **at-least-once**: se o `cotubify-gerador` cair depois de mandar o e-mail mas antes de confirmar (*ack*) a mensagem, o broker a entrega de novo quando ele voltar.
+* Alguém pode mover para a `gerador.queue` uma mensagem da DLQ que, na verdade, já tinha sido reprocessada.
+* A loja pode publicar o mesmo pedido duas vezes (um retry no produtor, por exemplo).
+
+Para ver o problema hoje, abra a `gerador.queue` na RabbitMQ UI e use **Publish message** para publicar duas vezes o mesmo JSON de pedido: o Mailpit vai mostrar **dois e-mails idênticos** para o cliente. Os uploads no S3 sobrescrevem a mesma chave e não causam estrago, mas o e-mail duplicado é um efeito colateral visível.
+
+A solução é o **Idempotent Consumer EIP** (no livro do Hohpe e Woolf, [Idempotent Receiver](https://www.enterpriseintegrationpatterns.com/patterns/messaging/IdempotentReceiver.html)): o consumidor guarda um identificador de cada mensagem já processada e descarta as repetidas. No Camel, é o [`idempotentConsumer`](https://camel.apache.org/components/latest/eips/idempotentConsumer-eip.html), que recebe uma expressão para a chave e um `IdempotentRepository`.
+
+**O desafio:** fazer o `cotubify-gerador` processar cada pedido **uma única vez**.
+
+Algumas perguntas para guiar a solução:
+
+1. **Qual é a chave?** O `pedidoId` já é o nosso Correlation Identifier e está num header logo depois do `unmarshal`. Ele é suficiente?
+2. **Onde colocar o `idempotentConsumer` na rota?** Antes do split? Envolvendo o quê, até onde vai o `.end()`?
+3. **Qual repositório usar?** O `MemoryIdempotentRepository` é o mais simples, mas o que acontece com as chaves quando o `cotubify-gerador` reinicia — justamente o cenário do redelivery do RabbitMQ? Compare com um repositório persistente, como o `FileIdempotentRepository`, um JDBC (o MySQL já está no `docker-compose.yml`) ou um Redis.
+4. **E a interação com o Dead Letter Channel?** Se um pedido falhar e for para a `gerador.dlq`, a chave dele fica no repositório? Ao mover a mensagem de volta para a `gerador.queue`, ela será reprocessada ou descartada como duplicada? Investigue as opções `eager` e `removeOnFailure` do `idempotentConsumer` e teste com o LocalStack parado.
+5. **Duplicata é erro?** Quer só ignorar em silêncio, ou registrar um log? Veja a opção `skipDuplicate` e a propriedade `CamelDuplicateMessage` da exchange.
+
+Para validar: publique o mesmo pedido duas vezes na `gerador.queue` e confira que só **um** e-mail chegou no Mailpit — inclusive com um restart do `cotubify-gerador` entre as duas publicações.

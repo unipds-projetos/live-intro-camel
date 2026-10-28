@@ -28,6 +28,14 @@
             "name": "cotubify.orders",
             "type": "fanout",
             "vhost": "/"
+        },
+        {
+            "arguments": {},
+            "auto_delete": false,
+            "durable": true,
+            "name": "cotubify.dlq",
+            "type": "fanout",
+            "vhost": "/"
         }
     ],
     "vhosts": [
@@ -84,6 +92,16 @@
             "name": "notas.queue",
             "type": "classic",
             "vhost": "/"
+        },
+        {
+            "arguments": {
+                "x-queue-type": "classic"
+            },
+            "auto_delete": false,
+            "durable": true,
+            "name": "gerador.dlq",
+            "type": "classic",
+            "vhost": "/"
         }
     ],
     "bindings": [
@@ -101,6 +119,14 @@
             "destination_type": "queue",
             "routing_key": "",
             "source": "cotubify.orders",
+            "vhost": "/"
+        },
+        {
+            "arguments": {},
+            "destination": "gerador.dlq",
+            "destination_type": "queue",
+            "routing_key": "",
+            "source": "cotubify.dlq",
             "vhost": "/"
         }
     ]

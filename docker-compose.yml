@@ -21,8 +21,9 @@ services:
       - '15672:15672'
     volumes:
       # conf.d preserva o rabbitmq.conf gerado pela imagem a partir das variáveis de ambiente
-      - ./rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
-      - ./definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-load-definitions.conf:ro
+      - ./rabbitmq/definitions-rabbit.json:/etc/rabbitmq/definitions.json:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
       - rabbitmq_data:/var/lib/rabbitmq
   localstack:
     image: localstack/localstack:community-archive
