@@ -2,6 +2,7 @@ package br.com.unipds.cotubify.gerador.integration;
 
 import br.com.unipds.cotubify.gerador.dto.GeracaoEbookRequest;
 import br.com.unipds.cotubify.gerador.service.GeradorEbookService;
+import org.apache.camel.Exchange;
 import org.apache.camel.LoggingLevel;
 import org.apache.camel.Message;
 import org.apache.camel.builder.AggregationStrategies;
@@ -9,8 +10,12 @@ import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.aws2.s3.AWS2S3Constants;
 import org.apache.camel.model.ClaimCheckOperation;
 import org.apache.camel.model.dataformat.JsonLibrary;
+import org.apache.camel.spi.IdempotentRepository;
+import org.apache.camel.support.processor.idempotent.FileIdempotentRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Map;
 
@@ -19,10 +24,14 @@ public class GeradorEbookRoute extends RouteBuilder {
 
     private final GeradorEbookService geradorEbookService;
     private final EmailService emailService;
+    private final IdempotentRepository pedidosProcessados;
 
-    public GeradorEbookRoute(GeradorEbookService geradorEbookService, EmailService emailService) {
+    public GeradorEbookRoute(GeradorEbookService geradorEbookService, EmailService emailService,
+                             @Value("${cotubify.idempotencia.arquivo}") String arquivoPedidosProcessados) {
         this.geradorEbookService = geradorEbookService;
         this.emailService = emailService;
+        // persistido em arquivo: as chaves sobrevivem a um restart (justamente quando o RabbitMQ reentrega)
+        this.pedidosProcessados = FileIdempotentRepository.fileIdempotentRepository(new File(arquivoPedidosProcessados));
     }
 
     @Override
@@ -43,6 +52,14 @@ public class GeradorEbookRoute extends RouteBuilder {
                 .setHeader("nomeCliente", simple("${body[clientName]}")) // correlation identifier
                 .setHeader("cpfCliente", simple("${body[cpf]}")) // correlation identifier
                 .setHeader("emailCliente", simple("${body[email]}")) // correlation identifier
+
+                .idempotentConsumer(header("pedidoId"), pedidosProcessados)
+                .skipDuplicate(false)
+
+                .filter(exchangeProperty(Exchange.DUPLICATE_MESSAGE).isEqualTo(true))
+                    .log(LoggingLevel.WARN, "Pedido ${header.pedidoId} duplicado. Ignorando.")
+                    .stop()
+                .end() // filter
 
                 .log("Pedido ${header.pedidoId} vai ser processado.")
 
@@ -95,7 +112,7 @@ public class GeradorEbookRoute extends RouteBuilder {
 
                 .claimCheck(ClaimCheckOperation.Pop)
 
-                .end()
+                .end() // split
 
                 .setHeader("To",      simple("${header.emailCliente}"))
                 .setHeader("Subject", simple("Seus ebooks do pedido #${header.pedidoId} estão prontos!"))
@@ -108,7 +125,8 @@ public class GeradorEbookRoute extends RouteBuilder {
 
                 .log("E-mail enviado para ${header.To}")
 
+                .log("Pedido ${header.pedidoId} processado com sucesso. Todos os ebooks gerados.")
 
-                .log("Pedido ${header.pedidoId} processado com sucesso. Todos os ebooks gerados.");
+                .end(); // idempotentConsumer
     }
 }

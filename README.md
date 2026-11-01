@@ -84,7 +84,7 @@ API REST que simula a pipeline de criação de arquivos físicos `.pdf` e `.epub
 - **Serviço:**
   - [GeradorEbookService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/service/GeradorEbookService.java): Gera **de verdade** os binários do ebook a partir de um HTML montado com os dados do pedido — `gerarPdf` (via iText `HtmlConverter`) e `gerarEpub` (via `epublib`), ambos devolvendo `byte[]`. O método `gerarPdfEEpub` continua existindo para o endpoint REST manual e grava os dois arquivos em `target/ebooks/{pedidoId}/`.
 - **Integração (`br.com.unipds.cotubify.gerador.integration`):**
-  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers, faz o **Splitter** dos itens e, para cada ebook, gera o PDF e o EPUB e envia ambos para o **S3** (LocalStack) usando **Claim Check**. No fim do split, um **Aggregator** junta os ebooks gerados e dispara **um único e-mail HTML** por pedido com todos os links de download. Falhas são retentadas com backoff exponencial e, se persistirem, o pedido original vai para um **Dead Letter Channel** (`cotubify.dlq`).
+  - [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java): consome a `gerador.queue`, guarda os dados do pedido em headers, faz o **Splitter** dos itens e, para cada ebook, gera o PDF e o EPUB e envia ambos para o **S3** (LocalStack) usando **Claim Check**. No fim do split, um **Aggregator** junta os ebooks gerados e dispara **um único e-mail HTML** por pedido com todos os links de download. Falhas são retentadas com backoff exponencial e, se persistirem, o pedido original vai para um **Dead Letter Channel** (`cotubify.dlq`). Um **Idempotent Consumer** (chave `pedidoId`, guardada em arquivo) descarta pedidos que cheguem repetidos — veja a solução do [desafio](#-desafio-idempotent-consumer).
   - [EmailService.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/EmailService.java): recebe a `List<GeracaoEbookRequest>` agregada e monta o corpo HTML do e-mail, com uma linha (PDF | EPUB) por ebook.
 
 ---
@@ -660,3 +660,63 @@ Algumas perguntas para guiar a solução:
 5. **Duplicata é erro?** Quer só ignorar em silêncio, ou registrar um log? Veja a opção `skipDuplicate` e a propriedade `CamelDuplicateMessage` da exchange.
 
 Para validar: publique o mesmo pedido duas vezes na `gerador.queue` e confira que só **um** e-mail chegou no Mailpit — inclusive com um restart do `cotubify-gerador` entre as duas publicações.
+
+<details>
+<summary><strong>💡 Solução (só abra depois de tentar!)</strong></summary>
+
+<br>
+
+No [GeradorEbookRoute.java](file:///Users/alexandreaquiles/Documents/unipds/projetos-lives/live-apache-camel/cotubify-gerador/src/main/java/br/com/unipds/cotubify/gerador/integration/GeradorEbookRoute.java), o `idempotentConsumer` entra logo depois de o `pedidoId` virar header e envolve **todo** o resto da rota — split, uploads e e-mail — até um `.end()` no final:
+
+```java
+.setHeader("pedidoId", simple("${body[id]}"))
+// ... demais headers ...
+
+.idempotentConsumer(header("pedidoId"), pedidosProcessados)
+.skipDuplicate(false)
+
+.filter(exchangeProperty(Exchange.DUPLICATE_MESSAGE).isEqualTo(true))
+    .log(LoggingLevel.WARN, "Pedido ${header.pedidoId} duplicado. Ignorando.")
+    .stop()
+.end()
+
+.log("Pedido ${header.pedidoId} vai ser processado.")
+.split(...)
+    // ... PDF, EPUB, S3 ...
+.end()
+// ... e-mail ...
+.log("Pedido ${header.pedidoId} processado com sucesso. Todos os ebooks gerados.")
+
+.end(); // idempotentConsumer
+```
+
+O repositório é um `FileIdempotentRepository`, criado no construtor da rota a partir de uma propriedade:
+
+```java
+this.pedidosProcessados = FileIdempotentRepository.fileIdempotentRepository(new File(arquivoPedidosProcessados));
+```
+
+```properties
+cotubify.idempotencia.arquivo=data/pedidos-processados.txt
+```
+
+Respostas às perguntas:
+
+1. **Chave:** o `pedidoId`. É único por pedido na loja (chave primária no MySQL) e já estava num header. Repare que a idempotência é **por pedido**, não por ebook: com `stopOnException()`, um pedido nunca fica "metade processado" do ponto de vista do e-mail.
+2. **Onde:** antes do split e envolvendo tudo até o envio do e-mail, porque o efeito colateral que não pode repetir (o e-mail) é o último passo.
+3. **Repositório:** o `FileIdempotentRepository` grava uma chave por linha em `cotubify-gerador/data/pedidos-processados.txt` (ignorado no `.gitignore`) e sobrevive a restarts, sem nenhuma infra nova. A limitação: o arquivo é local. Com duas instâncias do `cotubify-gerador` consumindo a mesma fila, cada uma teria o seu arquivo e as duplicatas poderiam passar. Aí seria preciso um repositório compartilhado — JDBC (`camel-sql`, no MySQL), Redis (`camel-spring-redis`) ou Infinispan, por exemplo.
+4. **Dead Letter Channel:** não é preciso configurar nada. O `idempotentConsumer` é `eager` por padrão (a chave entra no repositório **antes** de processar, o que também barra uma duplicata que chegue enquanto a primeira ainda está em andamento) e `removeOnFailure=true`. No código do Camel (`IdempotentOnCompletion`), uma exchange **tratada pelo Dead Letter Channel** conta como falha, então a chave é removida. Resultado: mover o pedido da `gerador.dlq` de volta para a `gerador.queue` reprocessa normalmente.
+5. **Duplicata:** com `skipDuplicate(false)`, a duplicata **não** é descartada automaticamente. Ela segue com a propriedade `CamelDuplicateMessage=true` (`Exchange.DUPLICATE_MESSAGE`), o `filter` loga um `WARN` e o `stop()` encerra a exchange com sucesso — a mensagem é confirmada (*ack*) no RabbitMQ.
+
+Testado com os três cenários:
+
+| Cenário | Resultado |
+| :--- | :--- |
+| Mesmo pedido publicado duas vezes na `gerador.queue` | 1 e-mail; no log, `Pedido 901 duplicado. Ignorando.` |
+| Restart do `cotubify-gerador` e o mesmo pedido de novo | Continua duplicado — a chave estava no arquivo |
+| LocalStack parado → pedido na DLQ → LocalStack de volta → **Move messages** | Chave removida na falha; pedido reprocessado e 1 e-mail enviado |
+
+> [!WARNING]
+> O terceiro cenário revelou um comportamento do Dead Letter Channel da Live 4: com o `.parallelProcessing()`, os **dois** itens do pedido falham ao mesmo tempo, cada sub-mensagem esgota os seus retries e cada uma manda o pedido original (`useOriginalMessage()` + `shareUnitOfWork()`) para o DLC. Resultado: **duas cópias do mesmo pedido** na `gerador.dlq`. Sem o Idempotent Consumer, o *Move messages* geraria dois e-mails; com ele, a segunda cópia é logada como duplicada e ignorada. Um ótimo exemplo de por que idempotência é a rede de segurança de quem trabalha com mensageria.
+
+</details>
